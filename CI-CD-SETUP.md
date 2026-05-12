@@ -25,10 +25,23 @@ The workflow **builds but does not publish** on:
 - **Registry**: `337909757619.dkr.ecr.us-east-1.amazonaws.com`
 
 ### Image Tags
-Images are tagged as:
-- `<grafana-version>-quickwit-<plugin-version>-<short-sha>`
-  - Example: `12.4.0-quickwit-0.6.0-patched-a1b2c3d`
-- `latest` (always points to the most recent build)
+
+Images use **immutable tags only** (no `latest` tag for production safety):
+
+**For Git Tags** (e.g., `v0.6.0-patched-1`):
+```
+12.4.0-quickwit-0.6.0-patched-1
+```
+
+**For Untagged Commits**:
+```
+12.4.0-quickwit-0.6.0-patched-a1b2c3d
+```
+
+Where:
+- `12.4.0` = Grafana version
+- `0.6.0-patched` = Quickwit plugin version (patched)
+- `a1b2c3d` = Short git SHA (7 chars)
 
 ### Image Contents
 - **Base**: Grafana 12.4.0
@@ -90,14 +103,30 @@ After the workflow completes:
 
 ## Using the Image
 
-Once published, reference the image in your deployments:
+### Deployment Strategy
+
+1. **Find the latest tag** from the workflow output or ECR
+2. **Deploy to preprod** for testing
+3. **Promote to prod** after validation
 
 ```yaml
-# Using specific version
+# Preprod - test new builds
 image: 337909757619.dkr.ecr.us-east-1.amazonaws.com/grafana-quickwit:12.4.0-quickwit-0.6.0-patched-a1b2c3d
 
-# Or using latest
-image: 337909757619.dkr.ecr.us-east-1.amazonaws.com/grafana-quickwit:latest
+# Prod - promote after preprod validation
+image: 337909757619.dkr.ecr.us-east-1.amazonaws.com/grafana-quickwit:12.4.0-quickwit-0.6.0-patched-a1b2c3d
+```
+
+### Creating Release Tags
+
+To create a versioned release:
+
+```bash
+# Create and push a version tag
+git tag -a v0.6.0-patched-1 -m "Release v0.6.0-patched-1"
+git push origin v0.6.0-patched-1
+
+# This will create image tag: 12.4.0-quickwit-0.6.0-patched-1
 ```
 
 ## Troubleshooting
