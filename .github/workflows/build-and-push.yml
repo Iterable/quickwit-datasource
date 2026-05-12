@@ -5,28 +5,52 @@ on:
     branches:
       - disable-field-caps-all-fields
       - main
-    tags:
-      - 'v*'
+  pull_request:
+    types: [closed]
   workflow_dispatch:
+    inputs:
+      force_publish:
+        description: 'Force publish image'
+        required: false
+        type: boolean
+        default: false
 
 env:
   GRAFANA_VERSION: 12.4.0
-  AWS_REGION: us-east-1
+  AWS_REGION_MGT: us-east-1
+  DOCKER_REGISTRY_MGT: 337909757619.dkr.ecr.us-east-1.amazonaws.com
   ECR_REPOSITORY: grafana-quickwit
 
 jobs:
-  build-plugin:
-    runs-on: ubuntu-latest
+  build-and-publish:
+    name: Build and Publish Grafana Quickwit Image
+    runs-on: gha-runner-ecr-publish
+    outputs:
+      githash: ${{ steps.metadata.outputs.githash }}
+      image_tag: ${{ steps.metadata.outputs.image_tag }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate metadata
+        id: metadata
+        run: |
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          IMAGE_TAG="${GRAFANA_VERSION}-quickwit-0.6.0-patched-${SHORT_SHA}"
+
+          echo "githash=${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+
+          echo "Image will be tagged as: ${IMAGE_TAG}"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -41,82 +65,34 @@ jobs:
 
       - name: Build backend binaries
         run: |
-          mage -v buildAll || echo "Mage not available, using go build"
-          if [ ! -f dist/gpx_quickwit_linux_amd64 ]; then
+          # Try using mage if available, otherwise use go build directly
+          if command -v mage &> /dev/null; then
+            mage -v buildAll
+          else
+            echo "Mage not available, building with go directly"
             cd pkg
             GOOS=linux GOARCH=amd64 go build -o ../dist/gpx_quickwit_linux_amd64 .
             GOOS=linux GOARCH=arm64 go build -o ../dist/gpx_quickwit_linux_arm64 .
+            cd ..
           fi
 
       - name: Remove signature files for patched plugin
         run: |
           cd dist
           rm -f MANIFEST.txt
-          jq 'del(.signature)' plugin.json > plugin.json.tmp && mv plugin.json.tmp plugin.json
+          if [ -f plugin.json ]; then
+            # Remove signature field from plugin.json
+            jq 'del(.signature)' plugin.json > plugin.json.tmp && mv plugin.json.tmp plugin.json
+          fi
 
       - name: Package plugin
         run: |
           cd dist
           zip -r quickwit-quickwit-datasource-patched.zip . -x "*.zip"
+          ls -lh quickwit-quickwit-datasource-patched.zip
 
-      - name: Upload plugin artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: quickwit-plugin-patched
-          path: dist/quickwit-quickwit-datasource-patched.zip
-          retention-days: 30
-
-  build-and-push-image:
-    needs: build-plugin
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download plugin artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: quickwit-plugin-patched
-          path: ./plugin
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Generate image tags
-        id: meta
-        run: |
-          BRANCH_NAME=${GITHUB_REF#refs/heads/}
-          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
-
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG_VERSION=${GITHUB_REF#refs/tags/v}
-            IMAGE_TAG="${GRAFANA_VERSION}-quickwit-${TAG_VERSION}"
-          else
-            IMAGE_TAG="${GRAFANA_VERSION}-quickwit-0.6.0-patched-${SHORT_SHA}"
-          fi
-
-          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
-          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
-
-          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == refs/tags/* ]]; then
-            TAGS="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${IMAGE_TAG}"
-            TAGS="${TAGS},${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest"
-          else
-            TAGS="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${IMAGE_TAG}"
-          fi
-
-          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Create Dockerfile
         run: |
@@ -126,7 +102,7 @@ jobs:
           USER root
 
           # Install patched Quickwit plugin
-          COPY plugin/quickwit-quickwit-datasource-patched.zip /tmp/plugin.zip
+          COPY dist/quickwit-quickwit-datasource-patched.zip /tmp/plugin.zip
           RUN set -ex && \
               mkdir -p /var/lib/grafana/plugins && \
               cd /var/lib/grafana/plugins && \
@@ -142,6 +118,7 @@ jobs:
           LABEL org.opencontainers.image.description="Grafana with patched Quickwit datasource plugin (field_caps disabled)"
           LABEL grafana.version="${{ env.GRAFANA_VERSION }}"
           LABEL quickwit.plugin.version="0.6.0-patched"
+          LABEL githash="${{ steps.metadata.outputs.githash }}"
 
           EXPOSE 3000
 
@@ -149,30 +126,49 @@ jobs:
               CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
           EOF
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: false
-
-      - name: Output image details
+      - name: Build Docker image
         run: |
-          echo "### Docker Image Pushed 🚀" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Registry**: ${{ steps.login-ecr.outputs.registry }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Repository**: ${{ env.ECR_REPOSITORY }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Tags**:" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Grafana Version**: ${{ env.GRAFANA_VERSION }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Quickwit Plugin**: 0.6.0-patched (field_caps disabled)" >> $GITHUB_STEP_SUMMARY
+          docker buildx build \
+            --platform linux/amd64 \
+            --load \
+            --tag ${{ env.ECR_REPOSITORY }}:${{ steps.metadata.outputs.image_tag }} \
+            --tag ${{ env.ECR_REPOSITORY }}:latest \
+            -f Dockerfile .
+
+      - name: Publish to ECR
+        id: publish
+        if: |
+          github.event_name == 'workflow_dispatch' && github.event.inputs.force_publish == 'true' ||
+          github.event.action == 'closed' && github.event.pull_request.merged == true ||
+          github.ref == 'refs/heads/main' ||
+          github.ref == 'refs/heads/disable-field-caps-all-fields'
+        run: |
+          aws ecr get-login-password --region $AWS_REGION_MGT | docker login --username AWS --password-stdin $DOCKER_REGISTRY_MGT
+
+          docker tag ${{ env.ECR_REPOSITORY }}:${{ steps.metadata.outputs.image_tag }} \
+            $DOCKER_REGISTRY_MGT/${{ env.ECR_REPOSITORY }}:${{ steps.metadata.outputs.image_tag }}
+
+          docker tag ${{ env.ECR_REPOSITORY }}:latest \
+            $DOCKER_REGISTRY_MGT/${{ env.ECR_REPOSITORY }}:latest
+
+          docker push $DOCKER_REGISTRY_MGT/${{ env.ECR_REPOSITORY }}:${{ steps.metadata.outputs.image_tag }}
+          docker push $DOCKER_REGISTRY_MGT/${{ env.ECR_REPOSITORY }}:latest
+
+          SUMMARY=$'# Published Grafana Quickwit Image to ECR\n'
+          SUMMARY+=$'## Images\n'
+          SUMMARY+=$'* '"$DOCKER_REGISTRY_MGT"'/${{ env.ECR_REPOSITORY }}:'"${{ steps.metadata.outputs.image_tag }}"$'\n'
+          SUMMARY+=$'* '"$DOCKER_REGISTRY_MGT"'/${{ env.ECR_REPOSITORY }}:latest'$'\n'
+          SUMMARY+=$'\n## Details\n'
+          SUMMARY+=$'* **Grafana Version**: ${{ env.GRAFANA_VERSION }}\n'
+          SUMMARY+=$'* **Quickwit Plugin**: 0.6.0-patched (field_caps disabled)\n'
+          SUMMARY+=$'* **Git Hash**: ${{ steps.metadata.outputs.githash }}\n'
+          echo "$SUMMARY" >> $GITHUB_STEP_SUMMARY
+
+      - name: Build Summary (No Publish)
+        if: steps.publish.outcome == 'skipped'
+        run: |
+          SUMMARY=$'# Built Grafana Quickwit Image (Not Published)\n'
+          SUMMARY+=$'## Image Tag\n'
+          SUMMARY+=$'* ${{ env.ECR_REPOSITORY }}:${{ steps.metadata.outputs.image_tag }}\n'
+          SUMMARY+=$'\n_Image was built but not published to ECR. Publish occurs on PR merge or manual workflow dispatch._\n'
+          echo "$SUMMARY" >> $GITHUB_STEP_SUMMARY
