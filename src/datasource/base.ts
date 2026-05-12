@@ -332,65 +332,68 @@ export class BaseQuickwitDataSource
   }
 
   getFields(spec: FieldCapsSpec = {}): Observable<MetricFindValue[]> {
-    const range = spec.range || getDefaultTimeRange();
-    return from(
-      this.getResource('_elastic/' + this.index + '/_field_caps', {
-        start_timestamp: Math.floor(range.from.valueOf() / SECOND),
-        end_timestamp: Math.ceil(range.to.valueOf() / SECOND),
-      })
-    ).pipe(
-      map((field_capabilities_response: FieldCapabilitiesResponse) => {
-        // Cache field → type on the datasource for modifyQuery to consult.
-        // Quickwit routes phrase queries to the text variant first on multi-indexed
-        // fields (text+keyword), and text fields don't index positions by default.
-        // So prefer 'text' when present — it drives safer operator choices downstream.
-        for (const [name, caps] of Object.entries(field_capabilities_response.fields)) {
-          const typeKeys = Object.keys(caps);
-          const chosen = typeKeys.includes('text') ? 'text' : typeKeys[0];
-          if (chosen) {
-            this.fieldTypes[name] = chosen;
-          }
-        }
+    // PATCH: Disable field_caps to avoid large responses on indices with many dynamic fields
+    return of([]);
 
-        const shouldAddField = (field: any) => {
-          if (spec.aggregatable !== undefined && field.aggregatable !== spec.aggregatable) {
-            return false;
-          }
-          if (spec.searchable !== undefined && field.searchable !== spec.searchable) {
-            return false;
-          }
-          if (
-            spec.type &&
-            spec.type.length !== 0 &&
-            !(spec.type.includes(field.type) || spec.type.includes(fieldTypeMap[field.type]))
-          ) {
-            return false;
-          }
-          return true;
-        };
-        const fieldCapabilities = Object.entries(field_capabilities_response.fields)
-          .flatMap(([field_name, field_capabilities]) => {
-            return Object.values(field_capabilities).map((field_capability) => {
-              field_capability.field_name = field_name;
-              return field_capability;
-            });
-          })
-          .filter(shouldAddField)
-          .map((field_capability) => {
-            return {
-              text: field_capability.field_name,
-              type: fieldTypeMap[field_capability.type],
-            };
-          });
-        const uniquefieldCapabilities = fieldCapabilities
-          .filter(
-            (field_capability, index, self) =>
-              index === self.findIndex((t) => t.text === field_capability.text && t.type === field_capability.type)
-          )
-          .sort((a, b) => a.text.localeCompare(b.text));
-        return uniquefieldCapabilities;
-      })
-    );
+    // DISABLED:     const range = spec.range || getDefaultTimeRange();
+    // DISABLED:     return from(
+    // DISABLED:       this.getResource('_elastic/' + this.index + '/_field_caps', {
+    // DISABLED:         start_timestamp: Math.floor(range.from.valueOf() / SECOND),
+    // DISABLED:         end_timestamp: Math.ceil(range.to.valueOf() / SECOND),
+    // DISABLED:       })
+    // DISABLED:     ).pipe(
+    // DISABLED:       map((field_capabilities_response: FieldCapabilitiesResponse) => {
+    // DISABLED:         // Cache field → type on the datasource for modifyQuery to consult.
+    // DISABLED:         // Quickwit routes phrase queries to the text variant first on multi-indexed
+    // DISABLED:         // fields (text+keyword), and text fields don't index positions by default.
+    // DISABLED:         // So prefer 'text' when present — it drives safer operator choices downstream.
+    // DISABLED:         for (const [name, caps] of Object.entries(field_capabilities_response.fields)) {
+    // DISABLED:           const typeKeys = Object.keys(caps);
+    // DISABLED:           const chosen = typeKeys.includes('text') ? 'text' : typeKeys[0];
+    // DISABLED:           if (chosen) {
+    // DISABLED:             this.fieldTypes[name] = chosen;
+    // DISABLED:           }
+    // DISABLED:         }
+    // DISABLED: 
+    // DISABLED:         const shouldAddField = (field: any) => {
+    // DISABLED:           if (spec.aggregatable !== undefined && field.aggregatable !== spec.aggregatable) {
+    // DISABLED:             return false;
+    // DISABLED:           }
+    // DISABLED:           if (spec.searchable !== undefined && field.searchable !== spec.searchable) {
+    // DISABLED:             return false;
+    // DISABLED:           }
+    // DISABLED:           if (
+    // DISABLED:             spec.type &&
+    // DISABLED:             spec.type.length !== 0 &&
+    // DISABLED:             !(spec.type.includes(field.type) || spec.type.includes(fieldTypeMap[field.type]))
+    // DISABLED:           ) {
+    // DISABLED:             return false;
+    // DISABLED:           }
+    // DISABLED:           return true;
+    // DISABLED:         };
+    // DISABLED:         const fieldCapabilities = Object.entries(field_capabilities_response.fields)
+    // DISABLED:           .flatMap(([field_name, field_capabilities]) => {
+    // DISABLED:             return Object.values(field_capabilities).map((field_capability) => {
+    // DISABLED:               field_capability.field_name = field_name;
+    // DISABLED:               return field_capability;
+    // DISABLED:             });
+    // DISABLED:           })
+    // DISABLED:           .filter(shouldAddField)
+    // DISABLED:           .map((field_capability) => {
+    // DISABLED:             return {
+    // DISABLED:               text: field_capability.field_name,
+    // DISABLED:               type: fieldTypeMap[field_capability.type],
+    // DISABLED:             };
+    // DISABLED:           });
+    // DISABLED:         const uniquefieldCapabilities = fieldCapabilities
+    // DISABLED:           .filter(
+    // DISABLED:             (field_capability, index, self) =>
+    // DISABLED:               index === self.findIndex((t) => t.text === field_capability.text && t.type === field_capability.type)
+    // DISABLED:           )
+    // DISABLED:           .sort((a, b) => a.text.localeCompare(b.text));
+    // DISABLED:         return uniquefieldCapabilities;
+    // DISABLED:       })
+    // DISABLED:     );
   }
 
   /**
