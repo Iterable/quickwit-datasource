@@ -16,7 +16,7 @@ import {
   TimeRange,
   ToggleFilterAction,
 } from '@grafana/data';
-import { BucketAggregation, DataLinkConfig, ElasticsearchQuery, TermsQuery, FieldCapabilitiesResponse } from '@/types';
+import { BucketAggregation, DataLinkConfig, ElasticsearchQuery, TermsQuery } from '@/types';
 import {
   DataSourceWithBackend,
   getTemplateSrv,
@@ -29,7 +29,7 @@ import { isMetricAggregationWithField } from 'components/QueryEditor/MetricAggre
 import { bucketAggregationConfig } from 'components/QueryEditor/BucketAggregationsEditor/utils';
 import { isBucketAggregationWithField } from 'components/QueryEditor/BucketAggregationsEditor/aggregations';
 import ElasticsearchLanguageProvider from 'LanguageProvider';
-import { fieldTypeMap, hasWhiteSpace, isSimpleToken } from 'utils';
+import { hasWhiteSpace, isSimpleToken } from 'utils';
 import { addAddHocFilter } from 'modifyQuery';
 import { getQueryResponseProcessor } from 'datasource/processResponse';
 import { normalizeInternalLinkQuery } from '@/queryModel';
